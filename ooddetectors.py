@@ -90,13 +90,12 @@ class FeatureSD(BaseSD):
     def get_features(self, dataloader):
         features = np.zeros((len(dataloader), self.testbed.batch_size, self.num_features))
         if self.testbed.batch_size==1:
-            features = np.zeros((len(dataloader),1, self.num_features))
+            features = np.zeros((len(dataloader), self.num_features))
 
         for i, data in tqdm(enumerate(dataloader), total=len(dataloader)):
             x = data[0].cuda()
             feats = np.zeros((self.num_features, self.testbed.batch_size))
             for j, feature_fn in enumerate(self.feature_fns):
-                # print(feature_fn)
                 if feature_fn.__name__=="typicality":
                     features[i,:, j]=feature_fn(self.testbed.glow, x, self.train_test_norms).detach().cpu().numpy()
                 else:
@@ -107,11 +106,11 @@ class FeatureSD(BaseSD):
         return features
 
     def get_encodings(self, dataloader):
-
         features = np.zeros((len(dataloader), self.testbed.batch_size, self.rep_model.latent_dim))
         if self.testbed.batch_size==1:
-            features = np.zeros((len(dataloader), self.rep_model.latent_dim))
+            features = np.zeros((len(dataloader), self.num_features))
         for i, data in tqdm(enumerate(dataloader), total=len(dataloader)):
+
             x = data[0].cuda()
             features[i] = self.rep_model.get_encoding(x).detach().cpu().numpy()
         return features

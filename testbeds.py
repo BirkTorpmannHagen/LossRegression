@@ -4,7 +4,6 @@ from torch.utils.data import ConcatDataset
 from datasets.nico import build_nico_dataset
 from datasets.njord_dataset import build_njord_datasets
 from datasets.office31 import build_office31_dataset
-import os
 from datasets.officehome import build_officehome_dataset
 from datasets.polyps import build_polyp_dataset
 from datasets.eccv import build_ECCV
@@ -15,8 +14,7 @@ from glow.model import Glow
 from classifier.resnetclassifier import ResNetClassifier
 from ooddetectors import *
 
-from njord.utils.loss import ComputeLoss
-from njord.val import fetch_model
+
 from datasets.synthetic_shifts import *
 from torch.utils.data import DataLoader, ConcatDataset, random_split, Subset
 import torch.nn as nn
@@ -32,9 +30,9 @@ DEFAULT_PARAMS = {
 
 }
 class BaseTestBed:
-    def __init__(self, num_workers=0, mode="normal"):
+    def __init__(self, num_workers=5, mode="normal"):
         self.mode=mode
-        self.num_workers=0
+        self.num_workers=5
         self.noise_range = np.arange(0.0, 0.35, 0.05)[1:]
         self.batch_size = 16
 
@@ -63,17 +61,12 @@ class BaseTestBed:
         elif self.mode=="saturation":
             ood_sets = [self.dl(TransformedDataset(self.ind_val, desaturate, "saturation", noise)) for
                         noise in self.noise_range]
-            dicted = dict(zip(["saturation_{}".format(noise_val) for noise_val in self.noise_range], ood_sets))
+            dicted = dict(zip(["contrast_{}".format(noise_val) for noise_val in self.noise_range], ood_sets))
             return dicted
         elif self.mode=="brightness":
             ood_sets = [self.dl(TransformedDataset(self.ind_val, brightness_shift, "brightness", noise)) for
                         noise in self.noise_range]
             dicted = dict(zip(["brightness_{}".format(noise_val) for noise_val in self.noise_range], ood_sets))
-            return dicted
-        elif self.mode=="contrast":
-            ood_sets = [self.dl(TransformedDataset(self.ind_val, contrast_shift, "contrast", noise)) for
-                        noise in self.noise_range]
-            dicted = dict(zip(["contrast_{}".format(noise_val) for noise_val in self.noise_range], ood_sets))
             return dicted
         elif self.mode=="hue":
             ood_sets = [self.dl(TransformedDataset(self.ind_val, hue_shift, "hue", noise)) for
@@ -81,7 +74,7 @@ class BaseTestBed:
             dicted = dict(zip(["hue_{}".format(noise_val) for noise_val in self.noise_range], ood_sets))
             return dicted
         elif self.mode=="fgsm":
-            ood_sets = [self.dl(TransformedDataset(self.ind_val, fgsm, "fgsm", noise, model=self.classifier)) for
+            ood_sets = [self.dl(TransformedDataset(self.ind_val, targeted_fgsm, "fgsm", noise)) for
                         noise in self.noise_range]
             dicted = dict(zip(["adv_{}".format(noise_val) for noise_val in self.noise_range], ood_sets))
             return dicted
@@ -120,42 +113,6 @@ class BaseTestBed:
                 yhat = self.classifier(x)
                 losses[i] = criterion(yhat, y).cpu().numpy()
         return losses.flatten()
-
-class NicoTestBed(BaseTestBed):
-
-    def __init__(self, sample_size, rep_model="vae", mode="severity"):
-        super().__init__(sample_size)
-        self.trans = transforms.Compose([
-                                                 transforms.Resize((512, 512)),
-                                                 transforms.ToTensor(), ])
-        self.num_classes = num_classes = len(os.listdir("../../Datasets/NICO++/track_1/public_dg_0416/train/dim"))
-
-        self.num_classes = len(os.listdir("../../Datasets/NICO++/track_1/public_dg_0416/train/dim"))
-        self.contexts = os.listdir("../../Datasets/NICO++/track_1/public_dg_0416/train")
-        self.ind, self.ind_val = build_nico_dataset(1, "../../Datasets/NICO++", 0.2, self.trans, self.trans, context="dim", seed=0)
-        self.contexts.remove("dim")
-        # self.ind, self.ind_test = random_split(self.ind, [0.5, 0.5])
-        range1 = range(int(0.5*len(self.ind)))
-        range2 = range(int(0.5*len(self.ind))+2, int(len(self.ind)))
-        assert len(set(range1).intersection(range2))==0
-        self.ind_test = torch.utils.data.Subset(self.ind, range1)
-        self.ind=torch.utils.data.Subset(self.ind, range2)
-        oods = [build_nico_dataset(1, "../../Datasets/NICO++", 0.2, self.trans, self.trans, context=context, seed=0)[1] for context in self.contexts]
-        print(oods)
-        self.ood = ConcatDataset(oods)
-        self.classifier = ResNetClassifier.load_from_checkpoint(
-           "NICODataset_logs/checkpoints/epoch=279-step=175000.ckpt", num_classes=num_classes,
-            resnet_version=101).to("cuda").eval()
-        self.glow = Glow(3, 32, 4).cuda().eval()
-        self.glow.load_state_dict(torch.load("glow_logs/NICODataset_checkpoint/model_040001.pt"))
-        self.rep_model = self.glow
-        self.vae = VanillaVAE(3, 512).to("cuda").eval()
-        self.rep_model = self.vae
-        self.vae_experiment = VAEXperiment(self.rep_model, DEFAULT_PARAMS)
-        self.vae_experiment.load_state_dict(
-            torch.load("/home/birk/Projects/robustSD/vae_logs/NICODataset/version_1/checkpoints/epoch=68-step=86112.ckpt")["state_dict"])
-        self.mode=mode
-
 class Office31TestBed(BaseTestBed):
     def __init__(self, sample_size, rep_model="vae", mode="severity"):
         super().__init__(sample_size)
@@ -230,12 +187,12 @@ class ECCVTestBed(BaseTestBed):
         self.mode = mode
 
 
+
 class PolypTestBed(BaseTestBed):
     def __init__(self,rep_model, mode="normal"):
         super().__init__()
         self.ind, self.ind_val, self.ood = build_polyp_dataset("../../Datasets/Polyps", ex=False)
-        self.ind_test, self.ind_val = random_split(self.ind_val, [0.5, 0.5])
-        self.noise_range = np.arange(0.05, 0.35, 0.05)
+        self.noise_range = np.arange(0.05, 0.3, 0.05)
         self.batch_size=1
         #vae
         if rep_model=="vae":
@@ -251,8 +208,15 @@ class PolypTestBed(BaseTestBed):
         self.classifier.eval()
 
         #assign rep model
-        self.glow = Glow(3, 32, 4).cuda().eval()
-        self.glow.load_state_dict(torch.load("glow_logs/Polyp_checkpoint/model_040001.pt"))
+        if rep_model == "vae":
+            self.rep_model = self.vae
+        elif rep_model=="glow":
+            self.glow = Glow(3, 32, 4).cuda().eval()
+            self.glow.load_state_dict(torch.load("glow_logs/Polyp_checkpoint/model_040001.pt"))
+            self.rep_model = self.glow
+        else:
+            self.rep_model = self.classifier
+
         self.mode = mode
 
 
@@ -265,17 +229,3 @@ class PolypTestBed(BaseTestBed):
             losses[i]=self.classifier.compute_loss(x,y).mean()
         return losses
 
-
-def get_testbed(dataset_name, mode="normal", rep_model="classifier", batch_size=16):
-    if dataset_name=="Polyp":
-        return PolypTestBed(rep_model=rep_model, mode=mode)
-    elif dataset_name=="ECCV":
-        return ECCVTestBed(batch_size, rep_model=rep_model, mode=mode)
-    elif dataset_name=="OfficeHome":
-        return OfficeHomeTestBed(batch_size, rep_model=rep_model, mode=mode)
-    elif dataset_name=="Office31":
-        return Office31TestBed(batch_size, rep_model=rep_model, mode=mode)
-    elif dataset_name=="NICO":
-        return NicoTestBed(batch_size, rep_model=rep_model, mode=mode)
-    else:
-        raise ValueError("Dataset not found")
